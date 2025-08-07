@@ -119,7 +119,7 @@ private:
 		std::this_thread::sleep_for(500us);
 	}
 
-	FORCEINLINE static inline void BackoffExp(size_t& curMaxIters)
+	FORCEINLINE static void BackoffExp(size_t& curMaxIters)
 	{
 		thread_local std::minstd_rand                      gen(std::random_device{}());
 		thread_local std::uniform_int_distribution<size_t> dist;
