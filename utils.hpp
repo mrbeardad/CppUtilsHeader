@@ -195,6 +195,22 @@ inline std::string bin2hex(std::string_view data)
 	return hex;
 }
 
+inline std::string toupper(std::string_view str)
+{
+	std::string result;
+	result.reserve(str.size());
+	std::transform(str.begin(), str.end(), std::back_inserter(result), [](unsigned char c) { return std::toupper(c); });
+	return result;
+}
+
+inline std::string tolower(std::string_view str)
+{
+	std::string result;
+	result.reserve(str.size());
+	std::transform(str.begin(), str.end(), std::back_inserter(result), [](unsigned char c) { return std::tolower(c); });
+	return result;
+}
+
 template <typename T>
 inline T read(std::istream& s)
 {
@@ -239,7 +255,7 @@ inline std::string read(std::istream& s, size_t n)
 inline namespace win
 {
 
-#define DLOGW(...) ::OutputDebugStringW(std::format(__VA_ARGS__).c_str())
+	#define DLOGW(...) ::OutputDebugStringW(std::format(__VA_ARGS__).c_str())
 
 inline std::u16string& to_u16string(std::wstring& s)
 {
