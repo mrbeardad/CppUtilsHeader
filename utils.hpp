@@ -211,6 +211,9 @@ inline std::string tolower(std::string_view str)
 	return result;
 }
 
+/**
+ * @brief Recommend to check the s.gcount since eof may occured, or use s.exceptions(std::ios_base::eofbit)
+ */
 template <typename T>
 inline T read(std::istream& s)
 {
