@@ -1,8 +1,8 @@
+#pragma once
 #ifndef MRBEARDAD_UTILS_H
 #define MRBEARDAD_UTILS_H
 
 #ifdef _WIN32
-	#pragma once
 	#define WIN32_LEAN_AND_MEAN
 	#include <Windows.h>
 	#include <TlHelp32.h>
