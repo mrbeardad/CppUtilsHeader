@@ -3,13 +3,13 @@
 #define MRBEARDAD_UTILS_H
 
 #ifdef _WIN32
-	#define WIN32_LEAN_AND_MEAN
-	#include <Windows.h>
-	#include <TlHelp32.h>
-	#include <shellapi.h>
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#include <TlHelp32.h>
+#include <shellapi.h>
 
-	#undef min
-	#undef max
+#undef min
+#undef max
 #endif
 
 #include <atomic>
@@ -258,7 +258,7 @@ inline std::string read(std::istream& s, size_t n)
 inline namespace win
 {
 
-	#define DLOGW(...) ::OutputDebugStringW(std::format(__VA_ARGS__).c_str())
+#define DLOGW(...) ::OutputDebugStringW(std::format(__VA_ARGS__).c_str())
 
 inline std::u16string& to_u16string(std::wstring& s)
 {

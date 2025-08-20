@@ -40,7 +40,7 @@ Cpp11BracedListStyle: false
 EmptyLineBeforeAccessModifier: LogicalBlock
 IndentCaseBlocks: false
 IndentCaseLabels: true
-IndentPPDirectives: BeforeHash
+# IndentPPDirectives: BeforeHash
 IndentWidth: 4
 # NamespaceIndentation: All
 PointerAlignment: Left
