@@ -70,6 +70,25 @@ inline ScopeExit<T> operator+(ScopeExitDummy, T&& functor_)
 #define UNIQUE_VARIABLE_NAME(prefix) STR_CONCAT(prefix, __LINE__)
 #define defer auto UNIQUE_VARIABLE_NAME(_scope_exit_) = util::detail::ScopeExitDummy{} + [&]()
 
+class SimpleSpinLock
+{
+	std::atomic_flag locked = ATOMIC_FLAG_INIT;
+
+public:
+	void lock()
+	{
+		while (locked.test_and_set(std::memory_order_acquire))
+		{
+			;
+		}
+	}
+
+	void unlock()
+	{
+		locked.clear(std::memory_order_release);
+	}
+};
+
 class SpinLock
 {
 	std::atomic_bool locked_ = false;
