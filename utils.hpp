@@ -7,6 +7,8 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <shellapi.h>
+#include <ShlObj.h>
+#include <sddl.h>
 
 #undef min
 #undef max
@@ -203,12 +205,12 @@ inline std::string hex2bin(std::string_view hex)
 	return data;
 }
 
-inline std::string bin2hex(std::string_view data)
+inline std::string bin2hex(std::string_view data, bool upperCase = false)
 {
 	std::string hex;
 	for (auto c : data)
 	{
-		hex += std::format("{:02x}", c);
+		hex += upperCase ? std::format("{:02X}", c) : std::format("{:02x}", c);
 	}
 
 	return hex;
@@ -323,6 +325,9 @@ inline std::string to_string(const std::wstring_view& wstr)
 	return strTo;
 }
 
+typedef BOOL(__stdcall* PfnCloseHandle)(HANDLE);
+
+template <PfnCloseHandle F = &::CloseHandle>
 struct AutoHandle
 {
 	HANDLE handle = NULL;
@@ -344,7 +349,7 @@ struct AutoHandle
 		{
 			if (handle)
 			{
-				::CloseHandle(handle);
+				F(handle);
 			}
 			handle = other.handle;
 			other.handle = NULL;
@@ -362,7 +367,7 @@ struct AutoHandle
 	{
 		if (handle)
 		{
-			::CloseHandle(handle);
+			F(handle);
 			handle = NULL;
 		}
 	}
@@ -510,7 +515,7 @@ inline bool SetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wst
 
 inline void EnumAllProcesses(std::function<bool(const PROCESSENTRY32W&)> callback)
 {
-	HANDLE snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
+	AutoHandle snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
 	if (snapshot == INVALID_HANDLE_VALUE)
 	{
 		return;
@@ -527,36 +532,10 @@ inline void EnumAllProcesses(std::function<bool(const PROCESSENTRY32W&)> callbac
 		}
 		while (::Process32NextW(snapshot, &entry));
 	}
-	::CloseHandle(snapshot);
 }
 
-inline bool IsProcessElevated(DWORD pid)
+inline DWORD GetDesktopProcessId()
 {
-	bool isElevated = false;
-
-	HANDLE hProcess = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-	if (hProcess)
-	{
-		HANDLE hToken = nullptr;
-		if (::OpenProcessToken(hProcess, TOKEN_QUERY, &hToken))
-		{
-			TOKEN_ELEVATION elevation;
-			DWORD           dwSize;
-			if (::GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &dwSize))
-			{
-				isElevated = elevation.TokenIsElevated != 0;
-			}
-			::CloseHandle(hToken);
-		}
-		::CloseHandle(hProcess);
-	}
-
-	return isElevated;
-}
-
-inline AutoHandle CreateProcessAsDesktopUser(const std::wstring& path, const std::wstring& argument, const std::wstring& cwd = L"")
-{
-	AutoHandle hChild;
 	// "Shell_TrayWnd" is the class name for the taskbar window, owned by explorer.exe
 	HWND hwnd = ::FindWindowW(L"Shell_TrayWnd", NULL);
 	if (!hwnd)
@@ -569,25 +548,54 @@ inline AutoHandle CreateProcessAsDesktopUser(const std::wstring& path, const std
 	{
 		::GetWindowThreadProcessId(hwnd, &pid);
 	}
+	return pid;
+}
 
+inline bool IsProcessElevated(DWORD processId)
+{
+	bool isElevated = false;
+
+	AutoHandle hProcess = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+	if (hProcess)
+	{
+		AutoHandle hToken;
+		if (::OpenProcessToken(hProcess, TOKEN_QUERY, &hToken))
+		{
+			TOKEN_ELEVATION elevation;
+			DWORD           dwSize;
+			if (::GetTokenInformation(hToken, TokenElevation, &elevation, sizeof(elevation), &dwSize))
+			{
+				isElevated = elevation.TokenIsElevated != 0;
+			}
+		}
+	}
+
+	return isElevated;
+}
+
+inline AutoHandle<> CreateProcessAsDesktopUser(const std::wstring& path, const std::wstring& argument, const std::wstring& cwd = L"")
+{
+	AutoHandle hChild;
+
+	DWORD pid = GetDesktopProcessId();
 	if (pid == 0)
 	{
 		return hChild;
 	}
 
-	HANDLE hProcess = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+	AutoHandle hProcess = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
 	if (hProcess)
 	{
-		HANDLE hToken;
+		AutoHandle hToken;
 		if (::OpenProcessToken(hProcess, TOKEN_DUPLICATE, &hToken))
 		{
-			HANDLE hNewToken;
+			AutoHandle hNewToken;
 			if (::DuplicateTokenEx(hToken,
 					TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID,
 					NULL, SecurityImpersonation, TokenPrimary, &hNewToken))
 			{
-				auto                cmdline = L"\"" + path + L"\" " + argument;
-				auto                dir = cwd.empty() ? std::filesystem::path(path).parent_path().wstring() : cwd;
+				std::wstring        cmdline = L"\"" + path + L"\" " + argument;
+				std::wstring        dir = cwd.empty() ? std::filesystem::path(path).parent_path().wstring() : cwd;
 				PROCESS_INFORMATION pi{};
 				STARTUPINFOW        si{ sizeof(si) };
 				if (::CreateProcessAsUserW(hNewToken, NULL, cmdline.data(), NULL, NULL, FALSE, NULL, NULL, dir.c_str(), &si, &pi))
@@ -595,20 +603,17 @@ inline AutoHandle CreateProcessAsDesktopUser(const std::wstring& path, const std
 					hChild = pi.hProcess;
 					::CloseHandle(pi.hThread);
 				}
-				::CloseHandle(hNewToken);
 			}
-			::CloseHandle(hToken);
 		}
-		::CloseHandle(hProcess);
 	}
 
 	return hChild;
 }
 
-inline AutoHandle CreateProcessAsAdmin(const std::wstring& path, const std::wstring& argument, const std::wstring& cwd = L"")
+inline AutoHandle<> CreateProcessAsAdmin(const std::wstring& path, const std::wstring& argument, const std::wstring& cwd = L"")
 {
 	AutoHandle        hProcess;
-	auto              dir = cwd.empty() ? std::filesystem::path(path).parent_path().wstring() : cwd;
+	std::wstring      dir = cwd.empty() ? std::filesystem::path(path).parent_path().wstring() : cwd;
 	SHELLEXECUTEINFOW sei{};
 	sei.cbSize = sizeof(sei);
 	sei.fMask = SEE_MASK_NOCLOSEPROCESS;
@@ -627,18 +632,17 @@ inline AutoHandle CreateProcessAsAdmin(const std::wstring& path, const std::wstr
 
 inline bool KillProcessByNames(const std::vector<std::wstring>& names, bool wait = true)
 {
-	std::vector<HANDLE> hProcesses;
-	bool                failed = false;
+	std::vector<AutoHandle<>> hProcesses;
+	bool                      failed = false;
 
 	EnumAllProcesses([&](const PROCESSENTRY32W& entry) {
 		if (entry.th32ProcessID != 0
-			&& std::any_of(names.begin(), names.end(),
-				[exe = entry.szExeFile](const auto& name) { return ::_wcsicmp(exe, name.c_str()) == 0; }))
+			&& std::any_of(names.begin(), names.end(), [exe = entry.szExeFile](const std::wstring& name) { return ::_wcsicmp(exe, name.c_str()) == 0; }))
 		{
-			auto hProcess = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, entry.th32ProcessID);
+			HANDLE hProcess = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, entry.th32ProcessID);
 			if (hProcess && ::TerminateProcess(hProcess, 0))
 			{
-				hProcesses.push_back(hProcess);
+				hProcesses.emplace_back(hProcess);
 			}
 			else
 			{
@@ -650,12 +654,7 @@ inline bool KillProcessByNames(const std::vector<std::wstring>& names, bool wait
 
 	if (wait && !hProcesses.empty())
 	{
-		auto res = ::WaitForMultipleObjects(hProcesses.size(), hProcesses.data(), TRUE, INFINITE);
-
-		for (auto hProcess : hProcesses)
-		{
-			::CloseHandle(hProcess);
-		}
+		DWORD res = ::WaitForMultipleObjects(hProcesses.size(), reinterpret_cast<const HANDLE*>(hProcesses.data()), TRUE, INFINITE);
 
 		if (res < WAIT_OBJECT_0 || res >= WAIT_OBJECT_0 + hProcesses.size())
 		{
@@ -668,15 +667,15 @@ inline bool KillProcessByNames(const std::vector<std::wstring>& names, bool wait
 
 inline bool KillProcessByProcessIds(const std::vector<DWORD>& processIds, bool wait = true)
 {
-	std::vector<HANDLE> hProcesses;
-	bool                failed = false;
+	std::vector<AutoHandle<>> hProcesses;
+	bool                      failed = false;
 
 	for (auto pid : processIds)
 	{
-		auto hProcess = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
+		HANDLE hProcess = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
 		if (hProcess && ::TerminateProcess(hProcess, 0))
 		{
-			hProcesses.push_back(hProcess);
+			hProcesses.emplace_back(hProcess);
 		}
 		else
 		{
@@ -686,12 +685,7 @@ inline bool KillProcessByProcessIds(const std::vector<DWORD>& processIds, bool w
 
 	if (wait && !hProcesses.empty())
 	{
-		auto res = ::WaitForMultipleObjects(hProcesses.size(), hProcesses.data(), TRUE, INFINITE);
-
-		for (auto hProcess : hProcesses)
-		{
-			::CloseHandle(hProcess);
-		}
+		auto res = ::WaitForMultipleObjects(hProcesses.size(), reinterpret_cast<const HANDLE*>(hProcesses.data()), TRUE, INFINITE);
 
 		if (res < WAIT_OBJECT_0 || res >= WAIT_OBJECT_0 + hProcesses.size())
 		{
@@ -700,6 +694,79 @@ inline bool KillProcessByProcessIds(const std::vector<DWORD>& processIds, bool w
 	}
 
 	return !failed;
+}
+
+struct UserAccount
+{
+	std::vector<BYTE> tokenData;
+
+	const TOKEN_USER* TokenUser() const { return reinterpret_cast<const TOKEN_USER*>(tokenData.data()); }
+
+	std::wstring GetAccountUserName() const
+	{
+		std::wstring userName;
+
+		DWORD        userSize = 0;
+		DWORD        domainSize = 0;
+		SID_NAME_USE sidName;
+		::LookupAccountSidW(NULL, TokenUser()->User.Sid, NULL, &userSize, NULL, &domainSize, &sidName);
+		std::wstring user(userSize - 1, L'\0');
+		std::wstring domain(domainSize - 1, L'\0');
+		::LookupAccountSidW(NULL, TokenUser()->User.Sid, user.data(), &userSize, domain.data(), &domainSize, &sidName); // 4- LookupAccountSid
+		if (user != L"")
+		{
+			userName = domain + L"\\" + user;
+		}
+		return userName;
+	}
+
+	std::wstring GetAccountSid() const
+	{
+		std::wstring sid;
+		LPWSTR       sidString = nullptr;
+		if (::ConvertSidToStringSidW(TokenUser()->User.Sid, &sidString))
+		{
+			sid = sidString;
+			::LocalFree(sidString);
+		}
+		return sid;
+	}
+};
+
+inline UserAccount GetProcessUserAccount(DWORD processId)
+{
+	UserAccount user{};
+	AutoHandle  hProcess = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+
+	if (hProcess)
+	{
+		AutoHandle hToken;
+
+		if (::OpenProcessToken(hProcess, TOKEN_QUERY, &hToken))
+		{
+			DWORD tokenSize = 0;
+			::GetTokenInformation(hToken, TokenUser, NULL, 0, &tokenSize);
+
+			if (tokenSize > 0)
+			{
+				user.tokenData.resize(tokenSize);
+				::GetTokenInformation(hToken, TokenUser, user.tokenData.data(), tokenSize, &tokenSize);
+			}
+		}
+	}
+	return user;
+}
+
+inline std::wstring GetKnownFolderPath(REFKNOWNFOLDERID rfid)
+{
+	PWSTR        path;
+	std::wstring result;
+	if (SUCCEEDED(::SHGetKnownFolderPath(rfid, 0, NULL, &path)))
+	{
+		result = path;
+		::CoTaskMemFree(path);
+	}
+	return result;
 }
 
 } // namespace win
