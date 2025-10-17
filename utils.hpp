@@ -276,9 +276,6 @@ inline std::string read(std::istream& s, size_t n)
  */
 #ifdef _WIN32
 
-inline namespace win
-{
-
 #define DLOGW(...) ::OutputDebugStringW(std::format(__VA_ARGS__).c_str())
 
 inline std::u16string& to_u16string(std::wstring& s)
@@ -375,19 +372,13 @@ struct AutoHandle
 
 using RegType = std::variant<nullptr_t, DWORD, unsigned long long, std::vector<BYTE>, std::vector<std::wstring>, std::wstring>;
 
-inline RegType GetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wstring& valueName, DWORD dwFlags = RRF_RT_ANY)
+namespace detail
+{
+
+inline RegType GetRegValue(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, DWORD dwFlags, DWORD dwType, DWORD cbData)
 {
 	RegType var;
-
-	DWORD   dwType = 0;
-	DWORD   cbData = 0;
-	LSTATUS result = ::RegGetValueW(rootKey, subKey.c_str(), valueName.c_str(), dwFlags, &dwType, NULL, &cbData);
-	if (result != ERROR_SUCCESS)
-	{
-		return var;
-	}
-
-	LPBYTE data = NULL;
+	LPBYTE  data = NULL;
 	switch (dwType)
 	{
 		case REG_DWORD:
@@ -416,7 +407,7 @@ inline RegType GetRegValue(HKEY rootKey, const std::wstring& subKey, const std::
 			return var;
 	}
 
-	result = ::RegGetValueW(rootKey, subKey.c_str(), valueName.c_str(), dwFlags, &dwType, data, &cbData);
+	LSTATUS result = ::RegGetValueW(hKey, subKey.c_str(), valueName.c_str(), dwFlags, &dwType, data, &cbData);
 
 	if (result != ERROR_SUCCESS)
 	{
@@ -435,6 +426,66 @@ inline RegType GetRegValue(HKEY rootKey, const std::wstring& subKey, const std::
 	}
 
 	return var;
+}
+
+} // namespace detail
+
+inline RegType GetRegValue(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, DWORD dwFlags = RRF_RT_ANY)
+{
+	DWORD   dwType = 0;
+	DWORD   cbData = 0;
+	LSTATUS result = ::RegGetValueW(hKey, subKey.c_str(), valueName.c_str(), dwFlags, &dwType, NULL, &cbData);
+	if (result != ERROR_SUCCESS && result != ERROR_MORE_DATA)
+	{
+		return {};
+	}
+	return detail::GetRegValue(hKey, subKey, valueName, dwFlags, dwType, cbData);
+}
+
+inline std::unordered_map<std::wstring, RegType> ListRegValues(HKEY hKey, const std::wstring& subKey, DWORD dwFlags = RRF_RT_ANY)
+{
+	std::unordered_map<std::wstring, RegType> values;
+
+	HKEY    hEnumKey;
+	LSTATUS result = ::RegOpenKeyExW(hKey, subKey.c_str(), 0, KEY_QUERY_VALUE, &hEnumKey);
+	if (result != ERROR_SUCCESS)
+	{
+		return values;
+	}
+	defer
+	{
+		::RegCloseKey(hEnumKey);
+	};
+
+	DWORD maxValueNameLen;
+	result = ::RegQueryInfoKeyW(hEnumKey, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &maxValueNameLen, NULL, NULL, NULL);
+	if (result != ERROR_SUCCESS)
+	{
+		return values;
+	}
+
+	std::wstring name;
+	DWORD        index = 0;
+	DWORD        dwType;
+
+	while (true)
+	{
+		DWORD nameSize = maxValueNameLen + 1;
+		name.resize(maxValueNameLen);
+		DWORD dataSize = 0;
+		result = ::RegEnumValueW(hEnumKey, index, name.data(), &nameSize, NULL, &dwType, NULL, &dataSize);
+		if (result != ERROR_SUCCESS)
+		{
+			break;
+		}
+		name.resize(nameSize);
+
+		values.emplace(std::move(name), detail::GetRegValue(hEnumKey, L"", name.c_str(), dwFlags, dwType, dataSize));
+
+		index++;
+	}
+
+	return values;
 }
 
 inline bool SetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wstring& valueName, const RegType& var, bool expandSz = false)
@@ -769,10 +820,9 @@ inline std::wstring GetKnownFolderPath(REFKNOWNFOLDERID rfid)
 	return result;
 }
 
-} // namespace win
-
 #endif
 
 } // namespace util
 
 #endif
+
