@@ -232,6 +232,22 @@ inline std::string tolower(std::string_view str)
 	return result;
 }
 
+inline std::wstring toupper(std::wstring_view str)
+{
+	std::wstring result;
+	result.reserve(str.size());
+	std::transform(str.begin(), str.end(), std::back_inserter(result), [](unsigned char c) { return std::toupper(c); });
+	return result;
+}
+
+inline std::wstring tolower(std::wstring_view str)
+{
+	std::wstring result;
+	result.reserve(str.size());
+	std::transform(str.begin(), str.end(), std::back_inserter(result), [](unsigned char c) { return std::tolower(c); });
+	return result;
+}
+
 /**
  * @brief Recommend to check the s.gcount since eof may occured, or use s.exceptions(std::ios_base::eofbit)
  */
@@ -825,4 +841,3 @@ inline std::wstring GetKnownFolderPath(REFKNOWNFOLDERID rfid)
 } // namespace util
 
 #endif
-
