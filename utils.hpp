@@ -1,17 +1,16 @@
 #pragma once
+
 #ifndef MRBEARDAD_UTILS_H
 #define MRBEARDAD_UTILS_H
 
 #ifdef _WIN32
+#define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
-#include <TlHelp32.h>
-#include <shellapi.h>
 #include <ShlObj.h>
+#include <TlHelp32.h>
 #include <sddl.h>
-
-#undef min
-#undef max
+#include <shellapi.h>
 #endif
 
 #include <atomic>
@@ -47,11 +46,9 @@ template <typename T>
 class ScopeExit
 {
 public:
-	ScopeExit(T&& codeChunk_)
-		: f_(std::forward<T>(codeChunk_)) {}
+	ScopeExit(T&& codeChunk_) : f_(std::forward<T>(codeChunk_)) {}
 
-	ScopeExit(ScopeExit<T>&& other)
-		: f_(std::move(other.f_)) {}
+	ScopeExit(ScopeExit<T>&& other) : f_(std::move(other.f_)) {}
 
 	~ScopeExit() { f_(); }
 
@@ -85,10 +82,7 @@ public:
 		}
 	}
 
-	void unlock()
-	{
-		locked.clear(std::memory_order_release);
-	}
+	void unlock() { locked.clear(std::memory_order_release); }
 };
 
 class SpinLock
@@ -115,15 +109,9 @@ public:
 		}
 	}
 
-	FORCEINLINE bool try_lock() noexcept
-	{
-		return !locked_.exchange(true, std::memory_order_acquire);
-	}
+	FORCEINLINE bool try_lock() noexcept { return !locked_.exchange(true, std::memory_order_acquire); }
 
-	FORCEINLINE void unlock()
-	{
-		locked_.store(false, std::memory_order_release);
-	}
+	FORCEINLINE void unlock() { locked_.store(false, std::memory_order_release); }
 
 private:
 	FORCEINLINE static void CpuRelax()
@@ -135,10 +123,7 @@ private:
 #endif
 	}
 
-	FORCEINLINE static void YieldSleep()
-	{
-		std::this_thread::sleep_for(500us);
-	}
+	FORCEINLINE static void YieldSleep() { std::this_thread::sleep_for(500us); }
 
 	FORCEINLINE static void BackoffExp(size_t& curMaxIters)
 	{
@@ -208,7 +193,7 @@ inline std::string hex2bin(std::string_view hex)
 inline std::string bin2hex(std::string_view data, bool upperCase = false)
 {
 	std::string hex;
-	for (auto c : data)
+	for (char c : data)
 	{
 		hex += upperCase ? std::format("{:02X}", c) : std::format("{:02x}", c);
 	}
@@ -216,19 +201,18 @@ inline std::string bin2hex(std::string_view data, bool upperCase = false)
 	return hex;
 }
 
+inline int toupper(int in)
+{
+	if (in <= 'z' && in >= 'a')
+		return in - ('z' - 'Z');
+	return in;
+}
+
 inline std::string toupper(std::string_view str)
 {
 	std::string result;
 	result.reserve(str.size());
-	std::transform(str.begin(), str.end(), std::back_inserter(result), [](unsigned char c) { return std::toupper(c); });
-	return result;
-}
-
-inline std::string tolower(std::string_view str)
-{
-	std::string result;
-	result.reserve(str.size());
-	std::transform(str.begin(), str.end(), std::back_inserter(result), [](unsigned char c) { return std::tolower(c); });
+	std::transform(str.begin(), str.end(), std::back_inserter(result), [](unsigned char c) { return toupper(c); });
 	return result;
 }
 
@@ -236,7 +220,22 @@ inline std::wstring toupper(std::wstring_view str)
 {
 	std::wstring result;
 	result.reserve(str.size());
-	std::transform(str.begin(), str.end(), std::back_inserter(result), [](unsigned char c) { return std::toupper(c); });
+	std::transform(str.begin(), str.end(), std::back_inserter(result), [](unsigned char c) { return toupper(c); });
+	return result;
+}
+
+inline int tolower(int in)
+{
+	if (in <= 'Z' && in >= 'A')
+		return in - ('Z' - 'z');
+	return in;
+}
+
+inline std::string tolower(std::string_view str)
+{
+	std::string result;
+	result.reserve(str.size());
+	std::transform(str.begin(), str.end(), std::back_inserter(result), [](char c) { return tolower(c); });
 	return result;
 }
 
@@ -244,7 +243,7 @@ inline std::wstring tolower(std::wstring_view str)
 {
 	std::wstring result;
 	result.reserve(str.size());
-	std::transform(str.begin(), str.end(), std::back_inserter(result), [](unsigned char c) { return std::tolower(c); });
+	std::transform(str.begin(), str.end(), std::back_inserter(result), [](wchar_t c) { return tolower(c); });
 	return result;
 }
 
@@ -338,23 +337,37 @@ inline std::string to_string(const std::wstring_view& wstr)
 	return strTo;
 }
 
-typedef BOOL(__stdcall* PfnCloseHandle)(HANDLE);
+template <typename HandleType>
+auto CloseFunctionForHandle()
+{
+	if constexpr (std::is_same_v<HandleType, HANDLE>)
+	{
+		return &::CloseHandle;
+	}
+	else if constexpr (std::is_same_v<HandleType, HKEY>)
+	{
+		return &::RegCloseKey;
+	}
+	else
+	{
+		static_assert(false, "Unsupported handle type, please add the close function into CloseFunctionForHandle");
+	}
+}
 
-template <PfnCloseHandle F = &::CloseHandle>
+template <typename HandleType = HANDLE>
 struct AutoHandle
 {
-	HANDLE handle = NULL;
+	HandleType         handle = NULL;
+	inline static auto close = CloseFunctionForHandle<HandleType>();
 
 	AutoHandle() = default;
 
-	AutoHandle(HANDLE h)
-		: handle(h) {}
+	AutoHandle(HandleType h) : handle(h) {}
 
 	AutoHandle(const AutoHandle&) = delete;
 	AutoHandle& operator=(const AutoHandle&) = delete;
 
-	AutoHandle(AutoHandle&& other) noexcept
-		: handle(other.handle) { other.handle = NULL; }
+	AutoHandle(AutoHandle&& other) noexcept : handle(other.handle) { other.handle = NULL; }
 
 	AutoHandle& operator=(AutoHandle&& other) noexcept
 	{
@@ -362,7 +375,7 @@ struct AutoHandle
 		{
 			if (handle)
 			{
-				F(handle);
+				close(handle);
 			}
 			handle = other.handle;
 			other.handle = NULL;
@@ -372,26 +385,28 @@ struct AutoHandle
 
 	~AutoHandle() { Close(); }
 
-	HANDLE* operator&() { return &handle; }
+	HandleType* operator&() { return &handle; }
 
-	operator HANDLE() const { return handle; }
+	operator HandleType() const { return handle; }
 
 	void Close()
 	{
 		if (handle)
 		{
-			F(handle);
+			close(handle);
 			handle = NULL;
 		}
 	}
 };
 
-using RegType = std::variant<nullptr_t, DWORD, unsigned long long, std::vector<BYTE>, std::vector<std::wstring>, std::wstring>;
+using RegType =
+	std::variant<nullptr_t, DWORD, unsigned long long, std::vector<BYTE>, std::vector<std::wstring>, std::wstring>;
 
 namespace detail
 {
 
-inline RegType GetRegValue(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, DWORD dwFlags, DWORD dwType, DWORD cbData)
+inline RegType GetRegValue(
+	HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, DWORD dwFlags, DWORD dwType, DWORD cbData)
 {
 	RegType var;
 	LPBYTE  data = NULL;
@@ -429,6 +444,24 @@ inline RegType GetRegValue(HKEY hKey, const std::wstring& subKey, const std::wst
 	{
 		var.emplace<nullptr_t>(nullptr);
 	}
+	else if (dwType == REG_SZ)
+	{
+		std::wstring& str = std::get<std::wstring>(var);
+		str.resize((cbData / sizeof(WCHAR)) - 1);
+	}
+	else if (dwType == REG_EXPAND_SZ)
+	{
+		std::wstring& str = std::get<std::wstring>(var);
+		str.resize((cbData / sizeof(WCHAR)) - 1);
+		std::wstring expandedStr;
+		DWORD        expandedSize = ::ExpandEnvironmentStringsW(str.c_str(), NULL, 0);
+		if (expandedSize > 0)
+		{
+			expandedStr.resize(expandedSize - 1);
+			::ExpandEnvironmentStringsW(str.c_str(), expandedStr.data(), expandedSize);
+			var.emplace<std::wstring>(std::move(expandedStr));
+		}
+	}
 	else if (dwType == REG_MULTI_SZ)
 	{
 		std::wstring&             multiSz = std::get<std::wstring>(var);
@@ -446,32 +479,45 @@ inline RegType GetRegValue(HKEY hKey, const std::wstring& subKey, const std::wst
 
 } // namespace detail
 
-inline RegType GetRegValue(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, DWORD dwFlags = RRF_RT_ANY)
+/**
+ * @brief Get the value data in registry
+ * @param hKey root key
+ * @param subKey sub key
+ * @param valueName value name
+ * @param wow64 0 means no addition flag, 64 means KEY_WOW64_64KEY, 32 means KEY_WOW64_32KEY
+ * @return
+ */
+inline RegType GetRegValue(HKEY hKey, const std::wstring& subKey, const std::wstring& valueName, int wow64 = 0)
 {
 	DWORD   dwType = 0;
 	DWORD   cbData = 0;
+	DWORD   dwFlags = RRF_RT_ANY | (wow64 == 0 ? 0 : wow64 == 64 ? RRF_SUBKEY_WOW6464KEY : RRF_SUBKEY_WOW6432KEY);
 	LSTATUS result = ::RegGetValueW(hKey, subKey.c_str(), valueName.c_str(), dwFlags, &dwType, NULL, &cbData);
-	if (result != ERROR_SUCCESS && result != ERROR_MORE_DATA)
+	if (result != ERROR_SUCCESS)
 	{
 		return {};
 	}
 	return detail::GetRegValue(hKey, subKey, valueName, dwFlags, dwType, cbData);
 }
 
-inline std::unordered_map<std::wstring, RegType> ListRegValues(HKEY hKey, const std::wstring& subKey, DWORD dwFlags = RRF_RT_ANY)
+/**
+ * @brief Get all values of the key in registry
+ * @param hKey root key
+ * @param subKey sub key
+ * @param wow64 0 means no addition flag, 64 means KEY_WOW64_64KEY, 32 means KEY_WOW64_32KEY
+ * @return
+ */
+inline std::unordered_map<std::wstring, RegType> ListRegValues(HKEY hKey, const std::wstring& subKey, int wow64 = 0)
 {
 	std::unordered_map<std::wstring, RegType> values;
 
-	HKEY    hEnumKey;
-	LSTATUS result = ::RegOpenKeyExW(hKey, subKey.c_str(), 0, KEY_QUERY_VALUE, &hEnumKey);
+	AutoHandle<HKEY> hEnumKey;
+	DWORD            dwFlags = wow64 == 0 ? 0 : wow64 == 64 ? KEY_WOW64_64KEY : KEY_WOW64_32KEY;
+	LSTATUS          result = ::RegOpenKeyExW(hKey, subKey.c_str(), 0, KEY_QUERY_VALUE | dwFlags, &hEnumKey);
 	if (result != ERROR_SUCCESS)
 	{
 		return values;
 	}
-	defer
-	{
-		::RegCloseKey(hEnumKey);
-	};
 
 	DWORD maxValueNameLen;
 	result = ::RegQueryInfoKeyW(hEnumKey, NULL, NULL, NULL, NULL, NULL, NULL, NULL, &maxValueNameLen, NULL, NULL, NULL);
@@ -496,7 +542,7 @@ inline std::unordered_map<std::wstring, RegType> ListRegValues(HKEY hKey, const 
 		}
 		name.resize(nameSize);
 
-		values.emplace(std::move(name), detail::GetRegValue(hEnumKey, L"", name.c_str(), dwFlags, dwType, dataSize));
+		values.emplace(std::move(name), detail::GetRegValue(hEnumKey, L"", name.c_str(), RRF_RT_ANY, dwType, dataSize));
 
 		index++;
 	}
@@ -504,11 +550,74 @@ inline std::unordered_map<std::wstring, RegType> ListRegValues(HKEY hKey, const 
 	return values;
 }
 
-inline bool SetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wstring& valueName, const RegType& var, bool expandSz = false)
+/**
+ * @brief Get all subkey names of the key in registry
+ * @param hKey root key
+ * @param subKey sub key
+ * @param wow64 0 means no addition flag, 64 means KEY_WOW64_64KEY, 32 means KEY_WOW64_32KEY
+ * @return
+ */
+inline std::vector<std::wstring> ListRegKeys(HKEY hKey, const std::wstring& subKey, int wow64 = 0)
 {
-	HKEY    hKey = nullptr;
-	DWORD   dwDisposition = 0;
-	LSTATUS result = ::RegCreateKeyExW(rootKey, subKey.c_str(), NULL, NULL, NULL, KEY_SET_VALUE, NULL, &hKey, &dwDisposition);
+	std::vector<std::wstring> keys;
+
+	AutoHandle<HKEY> hEnumKey;
+	DWORD            dwFlags = wow64 == 0 ? 0 : wow64 == 64 ? KEY_WOW64_64KEY : KEY_WOW64_32KEY;
+	LSTATUS          result =
+		::RegOpenKeyExW(hKey, subKey.c_str(), 0, KEY_QUERY_VALUE | KEY_ENUMERATE_SUB_KEYS | dwFlags, &hEnumKey);
+	if (result != ERROR_SUCCESS)
+	{
+		return keys;
+	}
+
+	DWORD maxSubKeyLen;
+	result = ::RegQueryInfoKeyW(hEnumKey, NULL, NULL, NULL, NULL, &maxSubKeyLen, NULL, NULL, NULL, NULL, NULL, NULL);
+	if (result != ERROR_SUCCESS)
+	{
+		return keys;
+	}
+
+	std::wstring name;
+	DWORD        index = 0;
+
+	while (true)
+	{
+		DWORD nameSize = maxSubKeyLen + 1;
+		name.resize(maxSubKeyLen);
+		DWORD dataSize = 0;
+		result = ::RegEnumKeyExW(hEnumKey, index, name.data(), &nameSize, NULL, NULL, NULL, NULL);
+		if (result != ERROR_SUCCESS)
+		{
+			break;
+		}
+		name.resize(nameSize);
+
+		keys.emplace_back(std::move(name));
+
+		index++;
+	}
+
+	return keys;
+}
+
+/**
+ * @brief Set the value data in registry
+ * @param rootKey root key
+ * @param subKey sub key
+ * @param valueName value name
+ * @param var value data
+ * @param wow64 0 means no addition flag, 64 means KEY_WOW64_64KEY, 32 means KEY_WOW64_32KEY
+ * @param expandSz is REG_EXPAND_SZ or REG_SZ if var is wstring
+ * @return
+ */
+inline bool SetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wstring& valueName, const RegType& var,
+	int wow64 = 0, bool expandSz = false)
+{
+	AutoHandle<HKEY> hKey = NULL;
+	DWORD            dwDisposition = 0;
+	DWORD            dwFlags = wow64 == 0 ? 0 : wow64 == 64 ? KEY_WOW64_64KEY : KEY_WOW64_32KEY;
+	LSTATUS          result = ::RegCreateKeyExW(
+        rootKey, subKey.c_str(), NULL, NULL, NULL, KEY_SET_VALUE | dwFlags, NULL, &hKey, &dwDisposition);
 	if (result != ERROR_SUCCESS)
 	{
 		return false;
@@ -565,19 +674,20 @@ inline bool SetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wst
 		var);
 
 	result = ::RegSetValueExW(hKey, valueName.c_str(), 0, type, data, cbData);
-	::RegCloseKey(hKey);
 
 	return result == ERROR_SUCCESS;
 }
 
-inline bool SetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wstring& valueName, const std::initializer_list<BYTE>& var, bool expandSz = false)
+inline bool SetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wstring& valueName,
+	const std::initializer_list<BYTE>& var, int wow64 = 0)
 {
-	return SetRegValue(rootKey, subKey, valueName, std::vector<BYTE>{ var }, expandSz);
+	return SetRegValue(rootKey, subKey, valueName, std::vector<BYTE>{ var }, wow64);
 }
 
-inline bool SetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wstring& valueName, const std::initializer_list<std::wstring>& var, bool expandSz = false)
+inline bool SetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wstring& valueName,
+	const std::initializer_list<std::wstring>& var, int wow64 = 0)
 {
-	return SetRegValue(rootKey, subKey, valueName, std::vector<std::wstring>{ var }, expandSz);
+	return SetRegValue(rootKey, subKey, valueName, std::vector<std::wstring>{ var }, wow64);
 }
 
 inline void EnumAllProcesses(std::function<bool(const PROCESSENTRY32W&)> callback)
@@ -640,7 +750,8 @@ inline bool IsProcessElevated(DWORD processId)
 	return isElevated;
 }
 
-inline AutoHandle<> CreateProcessAsDesktopUser(const std::wstring& path, const std::wstring& argument, const std::wstring& cwd = L"")
+inline AutoHandle<> CreateProcessAsDesktopUser(
+	const std::wstring& path, const std::wstring& argument, const std::wstring& cwd = L"")
 {
 	AutoHandle hChild;
 
@@ -658,14 +769,16 @@ inline AutoHandle<> CreateProcessAsDesktopUser(const std::wstring& path, const s
 		{
 			AutoHandle hNewToken;
 			if (::DuplicateTokenEx(hToken,
-					TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID,
+					TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_ADJUST_DEFAULT
+						| TOKEN_ADJUST_SESSIONID,
 					NULL, SecurityImpersonation, TokenPrimary, &hNewToken))
 			{
 				std::wstring        cmdline = L"\"" + path + L"\" " + argument;
 				std::wstring        dir = cwd.empty() ? std::filesystem::path(path).parent_path().wstring() : cwd;
 				PROCESS_INFORMATION pi{};
 				STARTUPINFOW        si{ sizeof(si) };
-				if (::CreateProcessAsUserW(hNewToken, NULL, cmdline.data(), NULL, NULL, FALSE, NULL, NULL, dir.c_str(), &si, &pi))
+				if (::CreateProcessAsUserW(
+						hNewToken, NULL, cmdline.data(), NULL, NULL, FALSE, NULL, NULL, dir.c_str(), &si, &pi))
 				{
 					hChild = pi.hProcess;
 					::CloseHandle(pi.hThread);
@@ -677,7 +790,8 @@ inline AutoHandle<> CreateProcessAsDesktopUser(const std::wstring& path, const s
 	return hChild;
 }
 
-inline AutoHandle<> CreateProcessAsAdmin(const std::wstring& path, const std::wstring& argument, const std::wstring& cwd = L"")
+inline AutoHandle<> CreateProcessAsAdmin(
+	const std::wstring& path, const std::wstring& argument, const std::wstring& cwd = L"")
 {
 	AutoHandle        hProcess;
 	std::wstring      dir = cwd.empty() ? std::filesystem::path(path).parent_path().wstring() : cwd;
@@ -704,7 +818,8 @@ inline bool KillProcessByNames(const std::vector<std::wstring>& names, bool wait
 
 	EnumAllProcesses([&](const PROCESSENTRY32W& entry) {
 		if (entry.th32ProcessID != 0
-			&& std::any_of(names.begin(), names.end(), [exe = entry.szExeFile](const std::wstring& name) { return ::_wcsicmp(exe, name.c_str()) == 0; }))
+			&& std::any_of(names.begin(), names.end(),
+				[exe = entry.szExeFile](const std::wstring& name) { return ::_wcsicmp(exe, name.c_str()) == 0; }))
 		{
 			HANDLE hProcess = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, entry.th32ProcessID);
 			if (hProcess && ::TerminateProcess(hProcess, 0))
@@ -721,7 +836,8 @@ inline bool KillProcessByNames(const std::vector<std::wstring>& names, bool wait
 
 	if (wait && !hProcesses.empty())
 	{
-		DWORD res = ::WaitForMultipleObjects(hProcesses.size(), reinterpret_cast<const HANDLE*>(hProcesses.data()), TRUE, INFINITE);
+		DWORD res = ::WaitForMultipleObjects(
+			hProcesses.size(), reinterpret_cast<const HANDLE*>(hProcesses.data()), TRUE, INFINITE);
 
 		if (res < WAIT_OBJECT_0 || res >= WAIT_OBJECT_0 + hProcesses.size())
 		{
@@ -737,7 +853,7 @@ inline bool KillProcessByProcessIds(const std::vector<DWORD>& processIds, bool w
 	std::vector<AutoHandle<>> hProcesses;
 	bool                      failed = false;
 
-	for (auto pid : processIds)
+	for (DWORD pid : processIds)
 	{
 		HANDLE hProcess = ::OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, FALSE, pid);
 		if (hProcess && ::TerminateProcess(hProcess, 0))
@@ -752,11 +868,11 @@ inline bool KillProcessByProcessIds(const std::vector<DWORD>& processIds, bool w
 
 	if (wait && !hProcesses.empty())
 	{
-		auto res = ::WaitForMultipleObjects(hProcesses.size(), reinterpret_cast<const HANDLE*>(hProcesses.data()), TRUE, INFINITE);
+		DWORD res = ::WaitForMultipleObjects(hProcesses.size(), &hProcesses[0], TRUE, INFINITE);
 
-		if (res < WAIT_OBJECT_0 || res >= WAIT_OBJECT_0 + hProcesses.size())
+		if (res == WAIT_FAILED)
 		{
-			return false;
+			failed = true;
 		}
 	}
 
@@ -779,7 +895,7 @@ struct UserAccount
 		::LookupAccountSidW(NULL, TokenUser()->User.Sid, NULL, &userSize, NULL, &domainSize, &sidName);
 		std::wstring user(userSize - 1, L'\0');
 		std::wstring domain(domainSize - 1, L'\0');
-		::LookupAccountSidW(NULL, TokenUser()->User.Sid, user.data(), &userSize, domain.data(), &domainSize, &sidName); // 4- LookupAccountSid
+		::LookupAccountSidW(NULL, TokenUser()->User.Sid, user.data(), &userSize, domain.data(), &domainSize, &sidName);
 		if (user != L"")
 		{
 			userName = domain + L"\\" + user;
@@ -836,8 +952,8 @@ inline std::wstring GetKnownFolderPath(REFKNOWNFOLDERID rfid)
 	return result;
 }
 
-#endif
+#endif // _WIN32
 
 } // namespace util
 
-#endif
+#endif // MRBEARDAD_UTILS_H

@@ -34,7 +34,7 @@ BreakInheritanceList: AfterColon
 BreakBeforeTernaryOperators: true
 BreakConstructorInitializers: BeforeComma
 BreakStringLiterals: false
-ColumnLimit: 0
+ColumnLimit: 120
 ConstructorInitializerAllOnOneLineOrOnePerLine: true
 Cpp11BracedListStyle: false
 EmptyLineBeforeAccessModifier: LogicalBlock
@@ -49,3 +49,4 @@ SpaceBeforeCaseColon: false
 TabWidth: 4
 UseTab: ForContinuationAndIndentation
 SeparateDefinitionBlocks: Always
+BreakTemplateDeclarations: Yes
