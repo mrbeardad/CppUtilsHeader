@@ -63,7 +63,7 @@ class ScopeExit
 };
 
 template <typename T>
-inline ScopeExit<T> operator+(ScopeExitDummy, T&& functor_)
+ScopeExit<T> operator+(ScopeExitDummy, T&& functor_)
 {
     return ScopeExit<T>{std::forward<T>(functor_)};
 }
@@ -269,7 +269,7 @@ inline std::wstring tolower(std::wstring_view str)
  * @brief Recommend to check the s.gcount since eof may occured, or use s.exceptions(std::ios_base::eofbit)
  */
 template <typename T>
-inline T read(std::istream& s)
+T read(std::istream& s)
 {
     T x{};
     s.read(reinterpret_cast<char*>(&x), sizeof(T));
@@ -277,7 +277,7 @@ inline T read(std::istream& s)
 }
 
 template <>
-inline std::string read(std::istream& s)
+std::string read(std::istream& s)
 {
     std::string str;
     std::getline(s, str, '\0');
@@ -285,7 +285,7 @@ inline std::string read(std::istream& s)
 }
 
 template <>
-inline std::wstring read(std::istream& s)
+std::wstring read(std::istream& s)
 {
     std::wstring str;
     for (wchar_t c; (c = read<wchar_t>(s)) != L'\0';)
@@ -321,6 +321,11 @@ inline const std::u16string& to_u16string(const std::wstring& s)
     return *reinterpret_cast<const std::u16string*>(&s);
 }
 
+inline std::u16string to_u16string(std::wstring&& s)
+{
+    return std::move(*reinterpret_cast<std::u16string*>(&s));
+}
+
 inline std::wstring& to_wstring(std::u16string& s)
 {
     return *reinterpret_cast<std::wstring*>(&s);
@@ -329,6 +334,11 @@ inline std::wstring& to_wstring(std::u16string& s)
 inline const std::wstring& to_wstring(const std::u16string& s)
 {
     return *reinterpret_cast<const std::wstring*>(&s);
+}
+
+inline std::wstring to_wstring(std::u16string&& s)
+{
+    return std::move(*reinterpret_cast<std::wstring*>(&s));
 }
 
 inline std::wstring to_wstring(const std::string_view& str)
@@ -539,9 +549,9 @@ inline RegType GetRegValue(HKEY hKey, const std::wstring& subKey, const std::wst
  * @param wow64 0 means no addition flag, 64 means KEY_WOW64_64KEY, 32 means KEY_WOW64_32KEY
  * @return
  */
-inline std::unordered_map<std::wstring, RegType> ListRegValues(HKEY hKey, const std::wstring& subKey, int wow64 = 0)
+inline std::vector<std::pair<std::wstring, RegType>> ListRegValues(HKEY hKey, const std::wstring& subKey, int wow64 = 0)
 {
-    std::unordered_map<std::wstring, RegType> values;
+    std::vector<std::pair<std::wstring, RegType>> values;
 
     AutoHandle<HKEY> hEnumKey;
     DWORD dwFlags = wow64 == 0 ? 0 : wow64 == 64 ? KEY_WOW64_64KEY : KEY_WOW64_32KEY;
@@ -574,7 +584,8 @@ inline std::unordered_map<std::wstring, RegType> ListRegValues(HKEY hKey, const 
         }
         name.resize(nameSize);
 
-        values.emplace(std::move(name), detail::GetRegValue(hEnumKey, L"", name.c_str(), RRF_RT_ANY, dwType, dataSize));
+        values.emplace_back(std::move(name),
+                            detail::GetRegValue(hEnumKey, L"", name.c_str(), RRF_RT_ANY, dwType, dataSize));
 
         index++;
     }
