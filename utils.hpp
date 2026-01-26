@@ -7,6 +7,7 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <winternl.h>
 #include <ShlObj.h>
 #include <TlHelp32.h>
 #include <sddl.h>
@@ -731,6 +732,58 @@ inline bool SetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wst
                         const std::initializer_list<std::wstring>& var, int wow64 = 0)
 {
     return SetRegValue(rootKey, subKey, valueName, std::vector<std::wstring>{var}, wow64);
+}
+
+inline void EnumToplevelWindows(const std::function<bool(HWND)>& callback)
+{
+    // non-capturing lambda can convert to function pointer required by EnumWindows
+    auto enumProc = [](HWND hwnd, LPARAM lParam) -> BOOL {
+        auto cb = reinterpret_cast<std::function<bool(HWND)>*>(lParam);
+        return (*cb)(hwnd);
+    };
+
+    ::EnumWindows(static_cast<WNDENUMPROC>(enumProc), reinterpret_cast<LPARAM>(&callback));
+}
+
+inline std::wstring GetProcessImagePath(DWORD pid)
+{
+    using NtQueryInformationProcess_t = decltype(&::NtQueryInformationProcess);
+    constexpr PROCESSINFOCLASS ProcessImageFileNameWin32 = (PROCESSINFOCLASS)43;
+
+    AutoHandle hProcess = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!hProcess)
+        return L"";
+
+    HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll)
+    {
+        return L"";
+    }
+
+    auto NtQueryInformationProcess = (NtQueryInformationProcess_t)GetProcAddress(ntdll, "NtQueryInformationProcess");
+    if (!NtQueryInformationProcess)
+    {
+        return L"";
+    }
+
+    ULONG size = 16 + MAX_PATH;
+    std::vector<BYTE> buffer(size);
+    NTSTATUS status = NtQueryInformationProcess(hProcess, ProcessImageFileNameWin32, buffer.data(), size, &size);
+    if (status == 0xC0000004) // STATUS_INFO_LENGTH_MISMATCH
+    {
+        buffer.resize(size);
+        status = NtQueryInformationProcess(hProcess, ProcessImageFileNameWin32, buffer.data(), size, &size);
+        if (status < 0)
+            return L"";
+    }
+    else if (status < 0)
+    {
+        return L"";
+    }
+
+    auto us = (PUNICODE_STRING)buffer.data();
+
+    return std::wstring(us->Buffer, us->Length / sizeof(wchar_t));
 }
 
 inline void EnumAllProcesses(std::function<bool(const PROCESSENTRY32W&)> callback)
