@@ -7,24 +7,35 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <combaseapi.h>
 #include <winternl.h>
 #include <ShlObj.h>
+#include <shobjidl.h>
 #include <TlHelp32.h>
 #include <sddl.h>
 #include <shellapi.h>
+#include <gdiplus.h>
 #endif
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <cstddef>
+#include <cstring>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <functional>
 #include <iosfwd>
+#include <limits>
+#include <optional>
 #include <random>
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <sstream>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -35,6 +46,10 @@ using namespace std::literals::chrono_literals;
 
 namespace util
 {
+
+// ============================================================================
+// Scope Exit
+// ============================================================================
 
 namespace detail
 {
@@ -53,7 +68,7 @@ class ScopeExit
     {
     }
 
-    ScopeExit(ScopeExit<T>&& other) : f_(std::move(other.f_))
+    ScopeExit(ScopeExit<T>&& other) noexcept(std::is_nothrow_move_constructible_v<T>) : f_(std::move(other.f_))
     {
     }
 
@@ -75,6 +90,10 @@ ScopeExit<T> operator+(ScopeExitDummy, T&& functor_)
 #define STR_CONCAT(x, y) STR_CONCAT_IMPL(x, y)
 #define UNIQUE_VARIABLE_NAME(prefix) STR_CONCAT(prefix, __LINE__)
 #define defer auto UNIQUE_VARIABLE_NAME(_scope_exit_) = util::detail::ScopeExitDummy{} + [&]()
+
+// ============================================================================
+// Synchronization
+// ============================================================================
 
 class SimpleSpinLock
 {
@@ -175,6 +194,10 @@ class SpinLock
     }
 };
 
+// ============================================================================
+// Encoding
+// ============================================================================
+
 inline int char2byte(char input)
 {
     if (input >= '0' && input <= '9')
@@ -197,8 +220,8 @@ inline std::string hex2bin(std::string_view hex)
     data.assign(hex.size() / 2, '\0');
     for (size_t i = 0; i < hex.size(); i += 2)
     {
-        uint8_t hi = char2byte(hex[i]);
-        uint8_t lo = char2byte(hex[i + 1]);
+        int hi = char2byte(hex[i]);
+        int lo = char2byte(hex[i + 1]);
         if (hi == -1 || lo == -1)
         {
             data.clear();
@@ -219,6 +242,102 @@ inline std::string bin2hex(std::string_view data, bool upperCase = false)
 
     return hex;
 }
+
+inline std::string EncodeBase64(std::string_view data)
+{
+    static constexpr char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string output;
+    output.reserve(((data.size() + 2) / 3) * 4);
+
+    for (size_t i = 0; i < data.size(); i += 3)
+    {
+        uint32_t value = static_cast<uint32_t>(static_cast<unsigned char>(data[i])) << 16;
+        if (i + 1 < data.size())
+        {
+            value |= static_cast<uint32_t>(static_cast<unsigned char>(data[i + 1])) << 8;
+        }
+        if (i + 2 < data.size())
+        {
+            value |= static_cast<uint32_t>(static_cast<unsigned char>(data[i + 2]));
+        }
+
+        output.push_back(table[(value >> 18) & 0x3F]);
+        output.push_back(table[(value >> 12) & 0x3F]);
+        output.push_back(i + 1 < data.size() ? table[(value >> 6) & 0x3F] : '=');
+        output.push_back(i + 2 < data.size() ? table[value & 0x3F] : '=');
+    }
+
+    return output;
+}
+
+namespace detail
+{
+
+inline int Base64Value(char input)
+{
+    if (input >= 'A' && input <= 'Z')
+        return input - 'A';
+    if (input >= 'a' && input <= 'z')
+        return input - 'a' + 26;
+    if (input >= '0' && input <= '9')
+        return input - '0' + 52;
+    if (input == '+')
+        return 62;
+    if (input == '/')
+        return 63;
+    return -1;
+}
+
+} // namespace detail
+
+inline std::optional<std::string> DecodeBase64(std::string_view encoded)
+{
+    if (encoded.size() % 4 != 0)
+    {
+        return std::nullopt;
+    }
+
+    std::string output;
+    output.reserve((encoded.size() / 4) * 3);
+
+    for (size_t i = 0; i < encoded.size(); i += 4)
+    {
+        const bool pad2 = encoded[i + 2] == '=';
+        const bool pad3 = encoded[i + 3] == '=';
+        if ((encoded[i] == '=') || (encoded[i + 1] == '=') || (pad2 && !pad3) ||
+            ((pad2 || pad3) && i + 4 != encoded.size()))
+        {
+            return std::nullopt;
+        }
+
+        const int value0 = detail::Base64Value(encoded[i]);
+        const int value1 = detail::Base64Value(encoded[i + 1]);
+        const int value2 = pad2 ? 0 : detail::Base64Value(encoded[i + 2]);
+        const int value3 = pad3 ? 0 : detail::Base64Value(encoded[i + 3]);
+        if (value0 < 0 || value1 < 0 || value2 < 0 || value3 < 0)
+        {
+            return std::nullopt;
+        }
+
+        const uint32_t value = (static_cast<uint32_t>(value0) << 18) | (static_cast<uint32_t>(value1) << 12) |
+                               (static_cast<uint32_t>(value2) << 6) | static_cast<uint32_t>(value3);
+        output.push_back(static_cast<char>((value >> 16) & 0xFF));
+        if (!pad2)
+        {
+            output.push_back(static_cast<char>((value >> 8) & 0xFF));
+        }
+        if (!pad3)
+        {
+            output.push_back(static_cast<char>(value & 0xFF));
+        }
+    }
+
+    return output;
+}
+
+// ============================================================================
+// String Case
+// ============================================================================
 
 inline int toupper(int in)
 {
@@ -266,6 +385,10 @@ inline std::wstring tolower(std::wstring_view str)
     return result;
 }
 
+// ============================================================================
+// Binary IO
+// ============================================================================
+
 /**
  * @brief Recommend to check the s.gcount since eof may occured, or use s.exceptions(std::ios_base::eofbit)
  */
@@ -278,7 +401,7 @@ T read(std::istream& s)
 }
 
 template <>
-std::string read(std::istream& s)
+inline std::string read(std::istream& s)
 {
     std::string str;
     std::getline(s, str, '\0');
@@ -286,9 +409,10 @@ std::string read(std::istream& s)
 }
 
 template <>
-std::wstring read(std::istream& s)
+inline std::wstring read(std::istream& s)
 {
     std::wstring str;
+    str.reserve(256);
     for (wchar_t c; (c = read<wchar_t>(s)) != L'\0';)
     {
         str += c;
@@ -296,11 +420,40 @@ std::wstring read(std::istream& s)
     return str;
 }
 
-inline std::string read(std::istream& s, size_t n)
+inline std::string read(std::istream& s, std::streamsize n)
 {
-    std::string str(n, '\0');
+    if (n < 0)
+    {
+        return {};
+    }
+
+    std::string str(static_cast<size_t>(n), '\0');
     s.read(str.data(), n);
     return str;
+}
+
+template <typename T>
+    requires std::is_trivially_copyable_v<T>
+void write(std::ostream& s, const T& value)
+{
+    s.write(reinterpret_cast<const char*>(&value), sizeof(T));
+}
+
+inline void write(std::ostream& s, std::string_view data)
+{
+    s.write(data.data(), static_cast<std::streamsize>(data.size()));
+}
+
+inline bool WriteFileBytes(const std::filesystem::path& path, std::string_view data)
+{
+    std::ofstream file(path, std::ios::binary);
+    if (!file)
+    {
+        return false;
+    }
+
+    write(file, data);
+    return file.good();
 }
 
 /*
@@ -310,7 +463,89 @@ inline std::string read(std::istream& s, size_t n)
  */
 #ifdef _WIN32
 
+// ============================================================================
+// Windows Diagnostics
+// ============================================================================
+
 #define DLOGW(...) ::OutputDebugStringW(std::format(__VA_ARGS__).c_str())
+
+// ============================================================================
+// Windows Initialization
+// ============================================================================
+
+class ScopedComInitializer
+{
+    bool initialized_ = false;
+    bool shouldUninitialize_ = false;
+
+  public:
+    ScopedComInitializer()
+    {
+        const HRESULT hr = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        initialized_ = SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
+        shouldUninitialize_ = SUCCEEDED(hr);
+    }
+
+    ScopedComInitializer(const ScopedComInitializer&) = delete;
+    ScopedComInitializer& operator=(const ScopedComInitializer&) = delete;
+
+    ~ScopedComInitializer()
+    {
+        if (shouldUninitialize_)
+        {
+            ::CoUninitialize();
+        }
+    }
+
+    bool IsInitialized() const noexcept
+    {
+        return initialized_;
+    }
+};
+
+namespace detail
+{
+
+class GdiplusSession
+{
+    ULONG_PTR token_ = 0;
+    Gdiplus::Status status_ = Gdiplus::GenericError;
+
+  public:
+    GdiplusSession()
+    {
+        Gdiplus::GdiplusStartupInput input;
+        status_ = Gdiplus::GdiplusStartup(&token_, &input, nullptr);
+    }
+
+    GdiplusSession(const GdiplusSession&) = delete;
+    GdiplusSession& operator=(const GdiplusSession&) = delete;
+
+    ~GdiplusSession()
+    {
+        if (status_ == Gdiplus::Ok)
+        {
+            Gdiplus::GdiplusShutdown(token_);
+        }
+    }
+
+    bool IsStarted() const noexcept
+    {
+        return status_ == Gdiplus::Ok;
+    }
+};
+
+} // namespace detail
+
+inline bool EnsureGdiplusStarted()
+{
+    static const detail::GdiplusSession session;
+    return session.IsStarted();
+}
+
+// ============================================================================
+// Windows String Conversion
+// ============================================================================
 
 inline std::u16string& to_u16string(std::wstring& s)
 {
@@ -348,9 +583,23 @@ inline std::wstring to_wstring(const std::string_view& str)
     if (str.empty())
         return wstrTo;
 
-    int size = ::MultiByteToWideChar(CP_UTF8, 0, str.data(), str.size(), NULL, 0);
+    if (str.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+    {
+        return {};
+    }
+
+    const int inputSize = static_cast<int>(str.size());
+    int size = ::MultiByteToWideChar(CP_UTF8, 0, str.data(), inputSize, NULL, 0);
+    if (size <= 0)
+    {
+        return {};
+    }
+
     wstrTo.resize(size);
-    ::MultiByteToWideChar(CP_UTF8, 0, str.data(), str.size(), wstrTo.data(), size);
+    if (::MultiByteToWideChar(CP_UTF8, 0, str.data(), inputSize, wstrTo.data(), size) <= 0)
+    {
+        return {};
+    }
     return wstrTo;
 }
 
@@ -360,11 +609,32 @@ inline std::string to_string(const std::wstring_view& wstr)
     if (wstr.empty())
         return strTo;
 
-    int size = ::WideCharToMultiByte(CP_UTF8, 0, wstr.data(), wstr.size(), NULL, 0, NULL, NULL);
+    if (wstr.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
+    {
+        return {};
+    }
+
+    const int inputSize = static_cast<int>(wstr.size());
+    int size = ::WideCharToMultiByte(CP_UTF8, 0, wstr.data(), inputSize, NULL, 0, NULL, NULL);
+    if (size <= 0)
+    {
+        return {};
+    }
+
     strTo.resize(size);
-    ::WideCharToMultiByte(CP_UTF8, 0, wstr.data(), wstr.size(), strTo.data(), size, NULL, NULL);
+    if (::WideCharToMultiByte(CP_UTF8, 0, wstr.data(), inputSize, strTo.data(), size, NULL, NULL) <= 0)
+    {
+        return {};
+    }
     return strTo;
 }
+
+template <typename>
+inline constexpr bool dependent_false_v = false;
+
+// ============================================================================
+// Windows Handle RAII
+// ============================================================================
 
 template <typename HandleType>
 auto CloseFunctionForHandle()
@@ -377,9 +647,14 @@ auto CloseFunctionForHandle()
     {
         return &::RegCloseKey;
     }
+    else if constexpr (std::is_same_v<HandleType, HBITMAP>)
+    {
+        return [](HBITMAP bitmap) { return ::DeleteObject(bitmap); };
+    }
     else
     {
-        static_assert(false, "Unsupported handle type, please add the close function into CloseFunctionForHandle");
+        static_assert(dependent_false_v<HandleType>,
+                      "Unsupported handle type, please add the close function into CloseFunctionForHandle");
     }
 }
 
@@ -443,7 +718,11 @@ struct AutoHandle
 };
 
 using RegType =
-    std::variant<nullptr_t, DWORD, unsigned long long, std::vector<BYTE>, std::vector<std::wstring>, std::wstring>;
+    std::variant<std::nullptr_t, DWORD, unsigned long long, std::vector<BYTE>, std::vector<std::wstring>, std::wstring>;
+
+// ============================================================================
+// Windows Registry
+// ============================================================================
 
 namespace detail
 {
@@ -485,7 +764,7 @@ inline RegType GetRegValue(HKEY hKey, const std::wstring& subKey, const std::wst
 
     if (result != ERROR_SUCCESS)
     {
-        var.emplace<nullptr_t>(nullptr);
+        var.emplace<std::nullptr_t>(nullptr);
     }
     else if (dwType == REG_SZ)
     {
@@ -569,12 +848,12 @@ inline std::vector<std::pair<std::wstring, RegType>> ListRegValues(HKEY hKey, co
         return values;
     }
 
-    std::wstring name;
     DWORD index = 0;
     DWORD dwType;
 
     while (true)
     {
+        std::wstring name;
         DWORD nameSize = maxValueNameLen + 1;
         name.resize(maxValueNameLen);
         DWORD dataSize = 0;
@@ -585,8 +864,8 @@ inline std::vector<std::pair<std::wstring, RegType>> ListRegValues(HKEY hKey, co
         }
         name.resize(nameSize);
 
-        values.emplace_back(std::move(name),
-                            detail::GetRegValue(hEnumKey, L"", name.c_str(), RRF_RT_ANY, dwType, dataSize));
+        RegType value = detail::GetRegValue(hEnumKey, L"", name.c_str(), RRF_RT_ANY, dwType, dataSize);
+        values.emplace_back(std::move(name), std::move(value));
 
         index++;
     }
@@ -621,11 +900,11 @@ inline std::vector<std::wstring> ListRegKeys(HKEY hKey, const std::wstring& subK
         return keys;
     }
 
-    std::wstring name;
     DWORD index = 0;
 
     while (true)
     {
+        std::wstring name;
         DWORD nameSize = maxSubKeyLen + 1;
         name.resize(maxSubKeyLen);
         DWORD dataSize = 0;
@@ -674,7 +953,7 @@ inline bool SetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wst
     std::visit(
         [&](auto& arg) {
             using T = std::decay_t<decltype(arg)>;
-            if constexpr (std::is_same_v<T, nullptr_t>)
+            if constexpr (std::is_same_v<T, std::nullptr_t>)
             {
                 type = REG_NONE;
                 data = nullptr;
@@ -734,6 +1013,10 @@ inline bool SetRegValue(HKEY rootKey, const std::wstring& subKey, const std::wst
     return SetRegValue(rootKey, subKey, valueName, std::vector<std::wstring>{var}, wow64);
 }
 
+// ============================================================================
+// Windows Enumeration
+// ============================================================================
+
 inline void EnumToplevelWindows(const std::function<bool(HWND)>& callback)
 {
     // non-capturing lambda can convert to function pointer required by EnumWindows
@@ -745,10 +1028,14 @@ inline void EnumToplevelWindows(const std::function<bool(HWND)>& callback)
     ::EnumWindows(static_cast<WNDENUMPROC>(enumProc), reinterpret_cast<LPARAM>(&callback));
 }
 
+// ============================================================================
+// Windows Process
+// ============================================================================
+
 inline std::wstring GetProcessImagePath(DWORD pid)
 {
     using NtQueryInformationProcess_t = decltype(&::NtQueryInformationProcess);
-    constexpr PROCESSINFOCLASS ProcessImageFileNameWin32 = (PROCESSINFOCLASS)43;
+    const PROCESSINFOCLASS ProcessImageFileNameWin32 = static_cast<PROCESSINFOCLASS>(43);
 
     AutoHandle hProcess = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!hProcess)
@@ -786,7 +1073,36 @@ inline std::wstring GetProcessImagePath(DWORD pid)
     return std::wstring(us->Buffer, us->Length / sizeof(wchar_t));
 }
 
-inline void EnumAllProcesses(std::function<bool(const PROCESSENTRY32W&)> callback)
+inline uint64_t FileTimeToUint64(const FILETIME& fileTime)
+{
+    ULARGE_INTEGER value{};
+    value.LowPart = fileTime.dwLowDateTime;
+    value.HighPart = fileTime.dwHighDateTime;
+    return value.QuadPart;
+}
+
+inline std::optional<uint64_t> GetProcessCreationTime(DWORD pid)
+{
+    AutoHandle hProcess = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!hProcess)
+    {
+        return std::nullopt;
+    }
+
+    FILETIME creationTime{};
+    FILETIME exitTime{};
+    FILETIME kernelTime{};
+    FILETIME userTime{};
+    if (!::GetProcessTimes(hProcess, &creationTime, &exitTime, &kernelTime, &userTime))
+    {
+        return std::nullopt;
+    }
+
+    return FileTimeToUint64(creationTime);
+}
+
+template <typename Callback>
+inline void EnumAllProcesses(Callback&& callback)
 {
     AutoHandle snapshot = ::CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, NULL);
     if (snapshot == INVALID_HANDLE_VALUE)
@@ -975,6 +1291,10 @@ inline bool KillProcessByProcessIds(const std::vector<DWORD>& processIds, bool w
     return !failed;
 }
 
+// ============================================================================
+// Windows User Account
+// ============================================================================
+
 struct UserAccount
 {
     std::vector<BYTE> tokenData;
@@ -1039,6 +1359,10 @@ inline UserAccount GetProcessUserAccount(DWORD processId)
     return user;
 }
 
+// ============================================================================
+// Windows Shell
+// ============================================================================
+
 inline std::wstring GetKnownFolderPath(REFKNOWNFOLDERID rfid)
 {
     PWSTR path;
@@ -1049,6 +1373,320 @@ inline std::wstring GetKnownFolderPath(REFKNOWNFOLDERID rfid)
         ::CoTaskMemFree(path);
     }
     return result;
+}
+
+inline std::wstring ResolveLnkExecutable(const std::filesystem::path& shortcutPath)
+{
+    ScopedComInitializer com;
+    if (!com.IsInitialized())
+    {
+        return {};
+    }
+
+    IShellLinkW* shellLink = nullptr;
+    HRESULT hr = ::CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW,
+                                    reinterpret_cast<void**>(&shellLink));
+    if (FAILED(hr))
+    {
+        return {};
+    }
+    defer
+    {
+        shellLink->Release();
+    };
+
+    IPersistFile* persistFile = nullptr;
+    hr = shellLink->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&persistFile));
+    if (FAILED(hr))
+    {
+        return {};
+    }
+    defer
+    {
+        persistFile->Release();
+    };
+
+    hr = persistFile->Load(shortcutPath.c_str(), STGM_READ);
+    if (FAILED(hr))
+    {
+        return {};
+    }
+
+    std::wstring target(32768, L'\0');
+    WIN32_FIND_DATAW findData{};
+    hr = shellLink->GetPath(target.data(), static_cast<int>(target.size()), &findData, SLGP_UNCPRIORITY);
+    if (FAILED(hr))
+    {
+        return {};
+    }
+    target.resize(wcsnlen_s(target.c_str(), target.size()));
+    return target;
+}
+
+// ============================================================================
+// Windows Imaging
+// ============================================================================
+
+inline std::optional<CLSID> GetImageEncoderClsid(const wchar_t* mimeType)
+{
+    UINT count = 0;
+    UINT size = 0;
+    if (!mimeType || Gdiplus::GetImageEncodersSize(&count, &size) != Gdiplus::Ok || count == 0 || size == 0)
+    {
+        return std::nullopt;
+    }
+
+    std::vector<BYTE> buffer(size);
+    auto* encoders = reinterpret_cast<Gdiplus::ImageCodecInfo*>(buffer.data());
+    if (Gdiplus::GetImageEncoders(count, size, encoders) != Gdiplus::Ok)
+    {
+        return std::nullopt;
+    }
+
+    for (UINT i = 0; i < count; ++i)
+    {
+        if (encoders[i].MimeType && std::wcscmp(encoders[i].MimeType, mimeType) == 0)
+        {
+            return encoders[i].Clsid;
+        }
+    }
+
+    return std::nullopt;
+}
+
+namespace detail
+{
+
+struct PngBitmapData
+{
+    std::string bytes;
+    int width = 0;
+    int height = 0;
+};
+
+#pragma pack(push, 1)
+struct IcoHeader
+{
+    uint16_t reserved = 0;
+    uint16_t type = 1;
+    uint16_t count = 1;
+};
+
+struct IcoEntry
+{
+    uint8_t width = 0;
+    uint8_t height = 0;
+    uint8_t colorCount = 0;
+    uint8_t reserved = 0;
+    uint16_t planes = 1;
+    uint16_t bitCount = 32;
+    uint32_t bytesInRes = 0;
+    uint32_t imageOffset = sizeof(IcoHeader) + sizeof(IcoEntry);
+};
+#pragma pack(pop)
+
+static_assert(sizeof(IcoHeader) == 6);
+static_assert(sizeof(IcoEntry) == 16);
+
+inline std::optional<PngBitmapData> BitmapToPngData(HBITMAP bitmap)
+{
+    if (!bitmap)
+    {
+        return std::nullopt;
+    }
+
+    if (!EnsureGdiplusStarted())
+    {
+        return std::nullopt;
+    }
+
+    static const auto pngEncoderClsid = GetImageEncoderClsid(L"image/png");
+    if (!pngEncoderClsid)
+    {
+        return std::nullopt;
+    }
+
+    IStream* stream = nullptr;
+    if (FAILED(::CreateStreamOnHGlobal(nullptr, TRUE, &stream)))
+    {
+        return std::nullopt;
+    }
+    defer
+    {
+        stream->Release();
+    };
+
+    BITMAP bitmapInfo{};
+    if (::GetObjectW(bitmap, sizeof(bitmapInfo), &bitmapInfo) == 0 || bitmapInfo.bmWidth <= 0 ||
+        bitmapInfo.bmHeight == 0)
+    {
+        return std::nullopt;
+    }
+
+    const int width = bitmapInfo.bmWidth;
+    const int height = std::abs(bitmapInfo.bmHeight);
+    const int stride = width * 4;
+    std::vector<BYTE> pixels(static_cast<size_t>(stride) * height);
+
+    if (bitmapInfo.bmBits && bitmapInfo.bmBitsPixel == 32)
+    {
+        const auto* source = static_cast<const BYTE*>(bitmapInfo.bmBits);
+        const int sourceStride = std::abs(bitmapInfo.bmWidthBytes);
+        const bool topDown = bitmapInfo.bmHeight < 0;
+
+        for (int y = 0; y < height; ++y)
+        {
+            const int sourceY = topDown ? y : height - 1 - y;
+            std::memcpy(pixels.data() + static_cast<size_t>(y) * stride,
+                        source + static_cast<size_t>(sourceY) * sourceStride, stride);
+        }
+    }
+    else
+    {
+        BITMAPINFO dibInfo{};
+        dibInfo.bmiHeader.biSize = sizeof(dibInfo.bmiHeader);
+        dibInfo.bmiHeader.biWidth = width;
+        dibInfo.bmiHeader.biHeight = -height;
+        dibInfo.bmiHeader.biPlanes = 1;
+        dibInfo.bmiHeader.biBitCount = 32;
+        dibInfo.bmiHeader.biCompression = BI_RGB;
+
+        HDC dc = ::GetDC(nullptr);
+        if (!dc)
+        {
+            return std::nullopt;
+        }
+        defer
+        {
+            ::ReleaseDC(nullptr, dc);
+        };
+
+        if (::GetDIBits(dc, bitmap, 0, height, pixels.data(), &dibInfo, DIB_RGB_COLORS) == 0)
+        {
+            return std::nullopt;
+        }
+    }
+
+    Gdiplus::Bitmap image(width, height, stride, PixelFormat32bppPARGB, pixels.data());
+    if (image.GetLastStatus() != Gdiplus::Ok || image.Save(stream, &*pngEncoderClsid, nullptr) != Gdiplus::Ok)
+    {
+        return std::nullopt;
+    }
+
+    HGLOBAL global = nullptr;
+    if (FAILED(::GetHGlobalFromStream(stream, &global)))
+    {
+        return std::nullopt;
+    }
+
+    SIZE_T byteCount = ::GlobalSize(global);
+    if (byteCount == 0)
+    {
+        return std::nullopt;
+    }
+
+    auto* bytes = static_cast<const BYTE*>(::GlobalLock(global));
+    if (!bytes)
+    {
+        return std::nullopt;
+    }
+    defer
+    {
+        ::GlobalUnlock(global);
+    };
+
+    PngBitmapData result;
+    result.bytes.assign(reinterpret_cast<const char*>(bytes), byteCount);
+    result.width = width;
+    result.height = height;
+    return result;
+}
+
+inline std::optional<std::string> BuildIcoFromPng(const PngBitmapData& png)
+{
+    if (png.bytes.empty() || png.width <= 0 || png.height <= 0 || png.width > 256 || png.height > 256 ||
+        png.bytes.size() > std::numeric_limits<uint32_t>::max())
+    {
+        return std::nullopt;
+    }
+
+    IcoEntry entry;
+    entry.width = static_cast<uint8_t>(png.width == 256 ? 0 : png.width);
+    entry.height = static_cast<uint8_t>(png.height == 256 ? 0 : png.height);
+    entry.bytesInRes = static_cast<uint32_t>(png.bytes.size());
+
+    std::ostringstream ico(std::ios::binary);
+    write(ico, IcoHeader{});
+    write(ico, entry);
+    write(ico, png.bytes);
+
+    return ico.str();
+}
+
+} // namespace detail
+
+inline AutoHandle<HBITMAP> GetShellItemIconBitmap(const std::filesystem::path& path, SIZE size = {64, 64})
+{
+    ScopedComInitializer com;
+    if (!com.IsInitialized())
+    {
+        return {};
+    }
+
+    IShellItemImageFactory* factory = nullptr;
+    HRESULT hr = ::SHCreateItemFromParsingName(path.c_str(), nullptr, IID_PPV_ARGS(&factory));
+    if (FAILED(hr))
+    {
+        return {};
+    }
+    defer
+    {
+        factory->Release();
+    };
+
+    HBITMAP bitmap = nullptr;
+    hr = factory->GetImage(size, static_cast<SIIGBF>(SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK), &bitmap);
+    if (FAILED(hr) || !bitmap)
+    {
+        return {};
+    }
+
+    return AutoHandle<HBITMAP>{bitmap};
+}
+
+inline bool BitmapToPngFile(HBITMAP bitmap, const std::filesystem::path& path)
+{
+    const auto png = detail::BitmapToPngData(bitmap);
+    return png && WriteFileBytes(path, png->bytes);
+}
+
+inline bool BitmapToIcoFile(HBITMAP bitmap, const std::filesystem::path& path)
+{
+    const auto png = detail::BitmapToPngData(bitmap);
+    if (!png)
+    {
+        return false;
+    }
+
+    const auto ico = detail::BuildIcoFromPng(*png);
+    return ico && WriteFileBytes(path, *ico);
+}
+
+inline std::string BitmapToPngDataUrl(HBITMAP bitmap)
+{
+    const auto png = detail::BitmapToPngData(bitmap);
+    if (!png)
+    {
+        return {};
+    }
+
+    return "data:image/png;base64," + EncodeBase64(png->bytes);
+}
+
+inline std::string GetShellItemIconDataUrl(const std::filesystem::path& path, SIZE size = {64, 64})
+{
+    AutoHandle<HBITMAP> bitmap = GetShellItemIconBitmap(path, size);
+    return BitmapToPngDataUrl(bitmap);
 }
 
 #endif // _WIN32
