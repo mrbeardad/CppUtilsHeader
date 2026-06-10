@@ -1465,6 +1465,7 @@ struct PngBitmapData
 };
 
 #pragma pack(push, 1)
+
 struct IcoHeader
 {
     uint16_t reserved = 0;
@@ -1483,6 +1484,7 @@ struct IcoEntry
     uint32_t bytesInRes = 0;
     uint32_t imageOffset = sizeof(IcoHeader) + sizeof(IcoEntry);
 };
+
 #pragma pack(pop)
 
 static_assert(sizeof(IcoHeader) == 6);
@@ -1620,7 +1622,7 @@ inline std::optional<std::string> BuildIcoFromPng(const PngBitmapData& png)
     write(ico, entry);
     write(ico, png.bytes);
 
-    return ico.str();
+    return std::move(ico).str();
 }
 
 } // namespace detail
