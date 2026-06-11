@@ -4,23 +4,29 @@
 #define MRBEARDAD_UTILS_H
 
 #ifdef _WIN32
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+#endif
 #include <Windows.h>
-#include <combaseapi.h>
-#include <winternl.h>
+
 #include <ShlObj.h>
-#include <shobjidl.h>
 #include <TlHelp32.h>
+#include <combaseapi.h>
+#include <gdiplus.h>
 #include <sddl.h>
 #include <shellapi.h>
-#include <gdiplus.h>
-#endif
+#include <shobjidl.h>
+#include <winternl.h>
+#endif // _WIN32
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdint>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <format>
@@ -31,9 +37,9 @@
 #include <optional>
 #include <random>
 #include <ranges>
+#include <sstream>
 #include <string>
 #include <string_view>
-#include <sstream>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -358,7 +364,7 @@ inline std::wstring toupper(std::wstring_view str)
 {
     std::wstring result;
     result.reserve(str.size());
-    std::transform(str.begin(), str.end(), std::back_inserter(result), [](unsigned char c) { return toupper(c); });
+    std::transform(str.begin(), str.end(), std::back_inserter(result), [](wchar_t c) { return toupper(c); });
     return result;
 }
 

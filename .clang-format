@@ -1,5 +1,4 @@
 BasedOnStyle: Microsoft
-SortIncludes: false
 SeparateDefinitionBlocks: Always
 BreakTemplateDeclarations: Yes
 PointerAlignment: Left
