@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cwctype>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -389,6 +390,22 @@ inline std::wstring tolower(std::wstring_view str)
     result.reserve(str.size());
     std::transform(str.begin(), str.end(), std::back_inserter(result), [](wchar_t c) { return tolower(c); });
     return result;
+}
+
+inline std::wstring trim(std::wstring value)
+{
+    size_t start = 0;
+    while (start < value.size() && std::iswspace(value[start]))
+    {
+        ++start;
+    }
+
+    size_t end = value.size();
+    while (end > start && std::iswspace(value[end - 1]))
+    {
+        --end;
+    }
+    return value.substr(start, end - start);
 }
 
 // ============================================================================
