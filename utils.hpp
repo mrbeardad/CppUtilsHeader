@@ -242,7 +242,7 @@ inline std::string hex2bin(std::string_view hex)
 inline std::string bin2hex(std::string_view data, bool upperCase = false)
 {
     std::string hex;
-    for (char c : data)
+    for (unsigned char c : data)
     {
         hex += upperCase ? std::format("{:02X}", c) : std::format("{:02x}", c);
     }
